@@ -1,0 +1,4 @@
+streamlit
+soccerdata
+pandas
+tls-requests
