@@ -2,87 +2,94 @@ import streamlit as st
 import pandas as pd
 import soccerdata as sd
 
+# Настройка страницы
 st.set_page_config(page_title="Football Scout Pro", layout="wide")
 
+# Функция безопасного подключения
 @st.cache_resource
-def get_fbref_connection():
+def get_fbref():
     try:
+        # Добавляем параметр no_cache=True внутри, если библиотека поддерживает, 
+        # или просто инициализируем
         return sd.FBref()
     except Exception as e:
+        st.error(f"Сетевая ошибка сервера данных. Попробуйте нажать Reboot в меню. Ошибка: {e}")
         return None
 
+# Функция загрузки списка
 @st.cache_data(ttl=86400)
-def load_all_players():
-    fb = get_fbref_connection()
+def get_player_list():
+    fb = get_fbref()
     if fb is None:
-        return {"Загрузка не удалась (введите ID вручную)": "none"}
+        return {"Ошибка загрузки (введите ID вручную)": "none"}
     try:
+        # Ограничиваем выборку только топ-лигами для стабильности
         df = fb.read_player_season_stats(stat_type="standard")
         df = df.reset_index()
-        df['display_name'] = df['player'] + " (" + df['Squad'].astype(str) + ")"
+        df['display_name'] = df['player'].astype(str) + " (" + df['Squad'].astype(str) + ")"
         return pd.Series(df.player_id.values, index=df.display_name).to_dict()
     except:
-        return {"Поиск временно недоступен": "none"}
+        return {"Список пуст (используйте ручной ввод)": "none"}
 
 # --- ИНТЕРФЕЙС ---
 st.title("⚽ Football Scout Professional")
 
-PLAYER_DB = load_all_players()
+PLAYER_DB = get_player_list()
 player_names = sorted(list(PLAYER_DB.keys()))
 
-st.sidebar.header("Параметры поиска")
+st.sidebar.header("Поиск")
 
-# Способ 1: Выбор из списка
-p1_select = st.sidebar.selectbox("Игрок №1 (Поиск):", player_names)
-# Способ 2: Ручной ввод ID (если поиск не нашел игрока)
-p1_manual = st.sidebar.text_input("Или введите ID №1 вручную (например, 42fd4c3c):")
+# Поле выбора и ручной ввод
+p1_sel = st.sidebar.selectbox("Игрок №1:", player_names)
+p1_id_manual = st.sidebar.text_input("Или ID №1 (например, 42fd4c3c):")
 
 st.sidebar.markdown("---")
 
-p2_select = st.sidebar.selectbox("Игрок №2 (Поиск):", player_names, index=min(1, len(player_names)-1))
-p2_manual = st.sidebar.text_input("Или введите ID №2 вручную:")
+p2_sel = st.sidebar.selectbox("Игрок №2:", player_names, index=min(1, len(player_names)-1))
+p2_id_manual = st.sidebar.text_input("Или ID №2:")
 
-# Логика выбора ID
-id1 = p1_manual if p1_manual else PLAYER_DB.get(p1_select)
-id2 = p2_manual if p2_manual else PLAYER_DB.get(p2_select)
+# Выбор итогового ID
+id1 = p1_id_manual.strip() if p1_id_manual else PLAYER_DB.get(p1_sel)
+id2 = p2_id_manual.strip() if p2_id_manual else PLAYER_DB.get(p2_sel)
 
-analysis_mode = st.sidebar.radio("Данные:", ["Итоги сезона", "Последние 5 игр"])
+mode = st.sidebar.radio("Режим:", ["Сезон", "Матчи"])
 
-if st.sidebar.button("Анализировать"):
+if st.sidebar.button("Сравнить"):
     if not id1 or id1 == "none" or not id2 or id2 == "none":
-        st.error("Пожалуйста, выберите игрока из списка или введите ID вручную.")
+        st.warning("Выберите игроков или введите их ID.")
     else:
-        fb = get_fbref_connection()
-        if fb is None:
-            st.error("Проблема с подключением к FBref. Попробуйте обновить страницу.")
-        else:
-            with st.spinner("Получение данных..."):
+        fb = get_fbref()
+        if fb:
+            with st.spinner("Сбор данных..."):
                 try:
-                    if analysis_mode == "Итоги сезона":
-                        # Загружаем данные сезона
-                        df_s = fb.read_player_season_stats(stat_type="standard").reset_index()
-                        d1 = df_s[df_s['player_id'] == id1].iloc[-1]
-                        d2 = df_s[df_s['player_id'] == id2].iloc[-1]
+                    if mode == "Сезон":
+                        stats = fb.read_player_season_stats(stat_type="standard").reset_index()
+                        # Фильтруем через loc для надежности
+                        d1 = stats[stats['player_id'] == id1].iloc[-1]
+                        d2 = stats[stats['player_id'] == id2].iloc[-1]
                         
-                        st.subheader("📊 Сравнение показателей")
+                        st.subheader("📊 Результаты")
+                        col1, col2 = st.columns(2)
+                        col1.metric(f"Голы {d1['player']}", int(d1['Gls']))
+                        col2.metric(f"Голы {d2['player']}", int(d2['Gls']))
+                        
                         res = pd.DataFrame({
-                            "Параметр": ["Команда", "Матчи", "Голы", "xG"],
-                            "Игрок 1": [d1['Squad'], d1['MP'], d1['Gls'], d1['xG']],
-                            "Игрок 2": [d2['Squad'], d2['MP'], d2['Gls'], d2['xG']]
+                            "Метрика": ["Клуб", "Матчи", "xG"],
+                            "Игрок 1": [d1['Squad'], d1['MP'], d1['xG']],
+                            "Игrow 2": [d2['Squad'], d2['MP'], d2['xG']]
                         })
                         st.table(res)
                     else:
-                        # Логи матчей
-                        df_m = fb.read_player_match_logs(stat_type="summary").reset_index()
-                        l1 = df_m[df_m['player_id'] == id1].tail(5)
-                        l2 = df_m[df_m['player_id'] == id2].tail(5)
+                        logs = fb.read_player_match_logs(stat_type="summary").reset_index()
+                        l1 = logs[logs['player_id'] == id1].tail(5)
+                        l2 = logs[logs['player_id'] == id2].tail(5)
                         
                         c1, c2 = st.columns(2)
                         with c1:
-                            st.subheader("Игрок 1")
+                            st.write(f"**Последние игры игрока 1**")
                             st.dataframe(l1[['Date', 'Opponent', 'Gls', 'xG']], hide_index=True)
                         with c2:
-                            st.subheader("Игрок 2")
+                            st.write(f"**Последние игры игрока 2**")
                             st.dataframe(l2[['Date', 'Opponent', 'Gls', 'xG']], hide_index=True)
                 except Exception as e:
-                    st.error(f"Данные для этих ID не найдены или сервер перегружен.")
+                    st.error(f"Данные не найдены. Проверьте правильность ID или попробуйте позже. (Ошибка: {e})")
